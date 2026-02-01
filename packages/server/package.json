@@ -1,0 +1,22 @@
+{
+  "name": "@effect-monorepo/server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@effect-monorepo/contract": "workspace:*",
+    "@effect/platform": "^0.94.2",
+    "@effect/platform-bun": "^0.87.1",
+    "@effect/rpc": "^0.73.0",
+    "effect": "^3.19.15"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.2"
+  }
+}

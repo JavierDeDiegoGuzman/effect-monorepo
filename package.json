@@ -1,0 +1,23 @@
+{
+  "name": "effect-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"bun run dev:server\" \"bun run dev:app\" --names \"SERVER,APP\" --prefix-colors \"cyan,green\"",
+    "dev:server": "lsof -ti:3000 | xargs kill -9 2>/dev/null || true && bun run --filter @effect-monorepo/server dev",
+    "dev:app": "bun run --filter @effect-monorepo/app dev",
+    "build": "bun run --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "check": "bun run typecheck",
+    "check:app": "bun run --filter @effect-monorepo/app typecheck",
+    "check:server": "bun run --filter @effect-monorepo/server typecheck",
+    "check:contract": "bun run --filter @effect-monorepo/contract typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.7.2"
+  }
+}

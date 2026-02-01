@@ -1,0 +1,19 @@
+{
+  "name": "@effect-monorepo/contract",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@effect/rpc": "^0.73.0",
+    "effect": "^3.19.15"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
