@@ -69,3 +69,6 @@ export class UsersRpcs extends RpcGroup.make(
     stream: true  // CRITICAL: This makes it return a Stream
   })
 ) {}
+
+// Export auth types and schemas
+export * from "./auth.js"
