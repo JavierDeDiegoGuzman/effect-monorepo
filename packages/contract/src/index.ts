@@ -1,11 +1,16 @@
 import { Rpc, RpcGroup } from "@effect/rpc"
 import { Schema } from "effect"
 
-// User schema
+// User schema with business context (following "logging sucks" principles)
 export class User extends Schema.Class<User>("User")({
   id: Schema.String,
   name: Schema.String,
   email: Schema.String,
+  // Business context fields for wide events
+  createdAt: Schema.Number, // Unix timestamp
+  subscription: Schema.optional(Schema.Literal("free", "premium", "enterprise")),
+  lifetimeValueCents: Schema.optional(Schema.Number),
+  lastSeenAt: Schema.optional(Schema.Number),
 }) {}
 
 // Event types for SSE - easily extensible
