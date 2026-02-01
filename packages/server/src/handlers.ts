@@ -1,5 +1,24 @@
-import { Effect, Array, Ref, Stream, Queue, Layer, Schedule } from "effect"
+import { Effect, Array, Ref, Stream, Queue, Layer, Schedule, Metric } from "effect"
 import { User, ServerEvent, UserCreatedEvent, PingEvent } from "@effect-monorepo/contract"
+
+// ============================================================================
+// METRICS - Custom metrics for observability
+// ============================================================================
+
+// Counter for total RPC calls
+const rpcCallsTotal = Metric.counter("rpc_calls_total")
+
+// Counter for user operations
+const userOperationsTotal = Metric.counter("user_operations_total")
+
+// Timer for RPC duration
+const rpcDurationMs = Metric.timer("rpc_duration_ms")
+
+// Counter for event broadcasts
+const eventBroadcastsTotal = Metric.counter("event_broadcasts_total")
+
+// Gauge for active subscribers
+const activeSubscribersGauge = Metric.gauge("active_subscribers")
 
 // EventBus for broadcasting server-sent events to all connected clients
 const makeEventBus = Effect.gen(function* () {
@@ -82,35 +101,97 @@ export class UsersStore extends Effect.Tag("UsersStore")<
 
 import { UsersRpcs } from "@effect-monorepo/contract"
 
-// Implement the RPC handlers
+// Implement the RPC handlers with instrumentation
 export const UsersRpcsLive = UsersRpcs.toLayer({
   GetUsers: () =>
     Effect.gen(function* () {
+      // Increment RPC call counter
+      yield* Metric.increment(rpcCallsTotal)
+      
+      // Add span annotations
+      yield* Effect.annotateCurrentSpan("rpc.method", "GetUsers")
+      yield* Effect.annotateCurrentSpan("operation.type", "query")
+      
       const store = yield* UsersStore
-      return yield* store.getAll
-    }),
+      const users = yield* store.getAll
+      
+      // Annotate result
+      yield* Effect.annotateCurrentSpan("result.count", users.length)
+      
+      return users
+    }).pipe(
+      // Create span and track duration
+      Effect.withSpan("RPC.GetUsers"),
+      Metric.trackDuration(rpcDurationMs)
+    ),
+    
   GetUser: (payload) =>
     Effect.gen(function* () {
+      yield* Metric.increment(rpcCallsTotal)
+      
+      yield* Effect.annotateCurrentSpan("rpc.method", "GetUser")
+      yield* Effect.annotateCurrentSpan("operation.type", "query")
+      yield* Effect.annotateCurrentSpan("user.id", payload.id)
+      
       const store = yield* UsersStore
-      return yield* store.getById(payload.id)
-    }),
+      const user = yield* store.getById(payload.id)
+      
+      yield* Effect.annotateCurrentSpan("result.found", true)
+      
+      return user
+    }).pipe(
+      Effect.withSpan("RPC.GetUser"),
+      Metric.trackDuration(rpcDurationMs),
+      Effect.catchAll((error) =>
+        Effect.gen(function* () {
+          yield* Effect.annotateCurrentSpan("error", true)
+          yield* Effect.annotateCurrentSpan("error.message", error)
+          return yield* Effect.fail(error)
+        })
+      )
+    ),
+    
   CreateUser: (payload) =>
     Effect.gen(function* () {
+      yield* Metric.increment(rpcCallsTotal)
+      yield* Metric.increment(userOperationsTotal)
+      
+      yield* Effect.annotateCurrentSpan("rpc.method", "CreateUser")
+      yield* Effect.annotateCurrentSpan("operation.type", "mutation")
+      yield* Effect.annotateCurrentSpan("user.name", payload.name)
+      yield* Effect.annotateCurrentSpan("user.email", payload.email)
+      
       const store = yield* UsersStore
       const eventBus = yield* EventBus
       const newUser = yield* store.create(payload.name, payload.email)
+      
+      yield* Effect.annotateCurrentSpan("user.id", newUser.id)
       
       // Broadcast the user.created event
       yield* eventBus.broadcast(
         new UserCreatedEvent({ type: "user.created", user: newUser })
       )
+      yield* Metric.increment(eventBroadcastsTotal)
+      
+      yield* Effect.log("User created", { userId: newUser.id, name: newUser.name })
       
       return newUser
-    }),
+    }).pipe(
+      Effect.withSpan("RPC.CreateUser"),
+      Metric.trackDuration(rpcDurationMs)
+    ),
+    
   SubscribeEvents: () =>
     Stream.unwrapScoped(
       Effect.gen(function* () {
+        yield* Metric.increment(rpcCallsTotal)
+        yield* Effect.annotateCurrentSpan("rpc.method", "SubscribeEvents")
+        yield* Effect.annotateCurrentSpan("operation.type", "stream")
+        
         const eventBus = yield* EventBus
+        
+        // Update gauge for active subscribers (increment on subscribe)
+        yield* Metric.increment(activeSubscribersGauge)
         
         // Real events from the event bus
         const realEvents = eventBus.subscribe
@@ -131,7 +212,12 @@ export const UsersRpcsLive = UsersRpcs.toLayer({
         // Real events have priority - heartbeat only fires when idle
         return Stream.mergeAll([realEvents, heartbeat], { 
           concurrency: 2 
-        })
-      })
+        }).pipe(
+          // Tag each event as it's sent
+          Stream.tap((event) => 
+            Effect.annotateCurrentSpan("event.type", event.type)
+          )
+        )
+      }).pipe(Effect.withSpan("RPC.SubscribeEvents"))
     ),
 })

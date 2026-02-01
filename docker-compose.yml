@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: effect-monorepo-jaeger
+    ports:
+      - "4318:4318"   # OTLP HTTP receiver (for sending traces)
+      - "16686:16686" # Jaeger UI (for viewing traces)
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - LOG_LEVEL=debug
+      # Enable CORS for browser telemetry
+      - COLLECTOR_OTLP_HTTP_CORS_ALLOWED_ORIGINS=*
+      - COLLECTOR_OTLP_HTTP_CORS_ALLOWED_HEADERS=*
+    restart: unless-stopped
+    networks:
+      - effect-network
+
+networks:
+  effect-network:
+    driver: bridge

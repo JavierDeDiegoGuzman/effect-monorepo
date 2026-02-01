@@ -5,6 +5,7 @@ import { Reactivity } from "@effect/experimental"
 import { Layer, Effect, Stream } from "effect"
 import { UsersRpcs } from "@effect-monorepo/contract"
 import type { User, ServerEvent } from "@effect-monorepo/contract"
+import { TelemetryLive } from "./telemetry.js"
 
 // ============================================================================
 // SINGLE RPC CLIENT - One client to rule them all
@@ -18,7 +19,8 @@ export class UsersClient extends AtomRpc.Tag<UsersClient>()("UsersClient", {
     url: "http://localhost:3000/rpc"
   }).pipe(
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(RpcSerialization.layerNdjson)  // CRITICAL: Use NDJSON for streaming support
+    Layer.provide(RpcSerialization.layerNdjson),  // CRITICAL: Use NDJSON for streaming support
+    Layer.provide(TelemetryLive)  // 👈 OpenTelemetry integration
   )
 }) {}
 

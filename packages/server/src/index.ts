@@ -4,6 +4,7 @@ import { RpcServer, RpcSerialization } from "@effect/rpc"
 import { Layer } from "effect"
 import { UsersRpcsLive, UsersStore, EventBus } from "./handlers.js"
 import { UsersRpcs } from "@effect-monorepo/contract"
+import { TelemetryLive } from "./telemetry.js"
 
 // Create the RPC server layer with HTTP router (using HTTP POST protocol)
 // CRITICAL: Use NDJSON serialization for streaming support
@@ -26,6 +27,7 @@ HttpLayerRouter.serve(AllRoutes).pipe(
   Layer.provide(UsersStore.Live),
   Layer.provide(EventBus.Live),
   Layer.provide(BunHttpServer.layer({ port: 3000 })),
+  Layer.provide(TelemetryLive),  // 👈 OpenTelemetry integration
   Layer.launch,
   BunRuntime.runMain
 )

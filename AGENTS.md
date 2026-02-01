@@ -239,6 +239,92 @@ Maintain code quality through:
 
 ## Common Pitfalls & Solutions
 
+### OpenTelemetry Integration
+
+This project uses **@effect/opentelemetry** with the lightweight Otlp implementation for observability.
+
+#### Setup & Usage
+
+**Starting Jaeger:**
+```bash
+# Start Jaeger with Docker Compose
+docker compose up -d
+
+# Verify Jaeger is running
+docker ps | grep jaeger
+
+# Stop Jaeger
+docker compose down
+```
+
+**Access Jaeger UI:** http://localhost:16686
+
+**Viewing Traces:**
+1. Open Jaeger UI
+2. Select service: `effect-rpc-server` or `effect-rpc-client`
+3. Click "Find Traces"
+4. Explore distributed traces showing the full request flow
+
+**Available Metrics:**
+- `rpc_calls_total` - Total number of RPC calls
+- `user_operations_total` - Total user CRUD operations
+- `rpc_duration_ms` - RPC call duration histogram
+- `event_broadcasts_total` - Total event broadcasts
+- `active_subscribers` - Number of active SSE subscribers
+
+#### Instrumenting Code
+
+**Creating Spans:**
+```typescript
+import { Effect } from "effect"
+
+const myOperation = Effect.gen(function* () {
+  yield* Effect.annotateCurrentSpan("key", "value")
+  // Your logic here
+}).pipe(
+  Effect.withSpan("operation-name")  // Creates a named span
+)
+```
+
+**Adding Metrics:**
+```typescript
+import { Metric } from "effect"
+
+const myCounter = Metric.counter("my_counter")
+const myTimer = Metric.timer("my_timer")
+
+const operation = Effect.gen(function* () {
+  yield* Metric.increment(myCounter)
+  // Your logic
+}).pipe(
+  Metric.trackDuration(myTimer)
+)
+```
+
+**Distributed Tracing:**
+Trace context automatically propagates through RPC calls between client and server. You'll see connected spans in Jaeger showing the complete request journey:
+```
+effect-rpc-client: CreateUser-RPC (50ms)
+  └─ HTTP POST /rpc (45ms)
+      └─ effect-rpc-server: RPC.CreateUser (40ms)
+          └─ user.create (30ms)
+```
+
+#### Architecture
+
+- **Server:** Bun runtime with Otlp exporter → Jaeger (OTLP HTTP port 4318)
+- **Client:** Browser with Otlp exporter → Jaeger (OTLP HTTP port 4318)
+- **Backend:** Jaeger all-in-one container
+- **Protocol:** OTLP over HTTP (lightweight, no heavy OpenTelemetry SDK deps)
+
+#### Production Considerations
+
+For production, update telemetry configuration:
+1. Change `baseUrl` in `packages/*/src/telemetry.ts` to your OTLP collector
+2. Add authentication headers if required
+3. Adjust export intervals for your needs
+4. Consider using a different exporter (Honeycomb, Datadog, etc.)
+
 ### CORS Issues with RPC Server
 
 **Problem**: Browser shows CORS errors when accessing RPC server from different origin.
