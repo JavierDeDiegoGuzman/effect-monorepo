@@ -1,114 +1,126 @@
+import { Rpc, RpcGroup, RpcMiddleware } from "@effect/rpc"
 import { Schema } from "effect"
 
-// ============================================
-// JWT & Token Types
-// ============================================
+// ============================================================================
+// Auth User - User data stored for authentication (includes password hash)
+// ============================================================================
+
+export class AuthUser extends Schema.Class<AuthUser>("AuthUser")({
+  id: Schema.String,
+  name: Schema.String,
+  email: Schema.String,
+  passwordHash: Schema.String,
+  createdAt: Schema.Number,
+}) {}
+
+// ============================================================================
+// UserSubject - JWT payload containing authenticated user info
+// ============================================================================
 
 export class UserSubject extends Schema.Class<UserSubject>("UserSubject")({
   userId: Schema.String,
   email: Schema.String,
   name: Schema.String,
-  // Standard JWT claims
-  iat: Schema.optional(Schema.Number),
-  exp: Schema.optional(Schema.Number),
-  sub: Schema.optional(Schema.String),
 }) {}
+
+// ============================================================================
+// Tokens - Response from login/register containing access and refresh tokens
+// ============================================================================
 
 export class Tokens extends Schema.Class<Tokens>("Tokens")({
   accessToken: Schema.String,
   refreshToken: Schema.String,
-  expiresIn: Schema.Number, // seconds
+  expiresIn: Schema.Number, // seconds until access token expires
 }) {}
 
-// ============================================
-// Auth Request Payloads
-// ============================================
+// ============================================================================
+// Error Types - Tagged errors for type-safe error handling
+// ============================================================================
+
+export class UnauthenticatedError extends Schema.TaggedError<UnauthenticatedError>(
+  "UnauthenticatedError"
+)("UnauthenticatedError", {
+  message: Schema.String,
+}) {}
+
+export class InvalidCredentialsError extends Schema.TaggedError<InvalidCredentialsError>(
+  "InvalidCredentialsError"
+)("InvalidCredentialsError", {
+  message: Schema.String,
+}) {}
+
+export class UserAlreadyExistsError extends Schema.TaggedError<UserAlreadyExistsError>(
+  "UserAlreadyExistsError"
+)("UserAlreadyExistsError", {
+  message: Schema.String,
+}) {}
+
+export class TokenExpiredError extends Schema.TaggedError<TokenExpiredError>(
+  "TokenExpiredError"
+)("TokenExpiredError", {
+  message: Schema.String,
+}) {}
+
+export class InvalidTokenError extends Schema.TaggedError<InvalidTokenError>(
+  "InvalidTokenError"
+)("InvalidTokenError", {
+  message: Schema.String,
+}) {}
+
+// ============================================================================
+// Payload Schemas - Input validation for auth operations
+// ============================================================================
 
 export class LoginPayload extends Schema.Class<LoginPayload>("LoginPayload")({
   email: Schema.String.pipe(Schema.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
-  password: Schema.String.pipe(Schema.minLength(6)),
+  password: Schema.String.pipe(Schema.minLength(8)),
 }) {}
 
 export class RegisterPayload extends Schema.Class<RegisterPayload>("RegisterPayload")({
-  name: Schema.String.pipe(Schema.minLength(2), Schema.maxLength(100)),
+  name: Schema.String.pipe(Schema.minLength(1)),
   email: Schema.String.pipe(Schema.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
-  password: Schema.String.pipe(Schema.minLength(6)),
+  password: Schema.String.pipe(Schema.minLength(8)),
 }) {}
 
 export class RefreshPayload extends Schema.Class<RefreshPayload>("RefreshPayload")({
   refreshToken: Schema.String,
 }) {}
 
-export class ForgotPasswordPayload extends Schema.Class<ForgotPasswordPayload>("ForgotPasswordPayload")({
-  email: Schema.String.pipe(Schema.pattern(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)),
+export class MePayload extends Schema.Class<MePayload>("MePayload")({
+  accessToken: Schema.String,  // Client sends access token in payload (transport portable)
 }) {}
 
-// ============================================
-// Auth Errors (Tagged for type-safe handling)
-// ============================================
+// ============================================================================
+// Auth RPC Group - All authentication procedures
+// ============================================================================
 
-export class UnauthenticatedError extends Schema.TaggedError<UnauthenticatedError>("UnauthenticatedError")(
-  "UnauthenticatedError",
-  { message: Schema.optional(Schema.String) }
+export class AuthRpcs extends RpcGroup.make(
+  Rpc.make("Login", {
+    success: Tokens,
+    payload: LoginPayload,
+    error: Schema.Union(InvalidCredentialsError, Schema.String),
+  }),
+  Rpc.make("Register", {
+    success: Tokens,
+    payload: RegisterPayload,
+    error: Schema.Union(UserAlreadyExistsError, Schema.String),
+  }),
+  Rpc.make("Refresh", {
+    success: Schema.Struct({
+      accessToken: Schema.String,
+      expiresIn: Schema.Number,
+    }),
+    payload: RefreshPayload,
+    error: Schema.Union(TokenExpiredError, InvalidTokenError, Schema.String),
+  }),
+  Rpc.make("Logout", {
+    success: Schema.Void,
+    payload: RefreshPayload,
+    error: Schema.Union(InvalidTokenError, Schema.String),
+  }),
+  Rpc.make("Me", {
+    success: UserSubject,
+    payload: MePayload,
+    error: Schema.Union(UnauthenticatedError, Schema.String),
+  })
 ) {}
-
-export class InvalidCredentialsError extends Schema.TaggedError<InvalidCredentialsError>("InvalidCredentialsError")(
-  "InvalidCredentialsError",
-  { message: Schema.optional(Schema.String) }
-) {}
-
-export class UserAlreadyExistsError extends Schema.TaggedError<UserAlreadyExistsError>("UserAlreadyExistsError")(
-  "UserAlreadyExistsError",
-  { email: Schema.String }
-) {}
-
-export class UserNotFoundError extends Schema.TaggedError<UserNotFoundError>("UserNotFoundError")(
-  "UserNotFoundError",
-  { email: Schema.String }
-) {}
-
-export class TokenExpiredError extends Schema.TaggedError<TokenExpiredError>("TokenExpiredError")(
-  "TokenExpiredError",
-  { message: Schema.optional(Schema.String) }
-) {}
-
-export class TokenInvalidError extends Schema.TaggedError<TokenInvalidError>("TokenInvalidError")(
-  "TokenInvalidError",
-  { message: Schema.optional(Schema.String) }
-) {}
-
-export class PasswordError extends Schema.TaggedError<PasswordError>("PasswordError")(
-  "PasswordError",
-  { reason: Schema.String }
-) {}
-
-// Union of all auth errors for convenience
-export const AuthError = Schema.Union(
-  UnauthenticatedError,
-  InvalidCredentialsError,
-  UserAlreadyExistsError,
-  UserNotFoundError,
-  TokenExpiredError,
-  TokenInvalidError
-)
-export type AuthError = Schema.Schema.Type<typeof AuthError>
-
-// ============================================
-// Auth User (stored in AuthStorage)
-// ============================================
-
-export class AuthUser extends Schema.Class<AuthUser>("AuthUser")({
-  id: Schema.String,
-  email: Schema.String,
-  name: Schema.String,
-  passwordHash: Schema.String,
-  createdAt: Schema.Number,
-}) {}
-
-export class RefreshTokenRecord extends Schema.Class<RefreshTokenRecord>("RefreshTokenRecord")({
-  token: Schema.String,
-  userId: Schema.String,
-  createdAt: Schema.Number,
-  expiresAt: Schema.Number,
-  revoked: Schema.optional(Schema.Boolean),
-}) {}

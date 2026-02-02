@@ -1,11 +1,6 @@
 import { Effect, Array, Ref, Stream, Queue, Layer, Schedule, Metric } from "effect"
-import { User, ServerEvent, UserCreatedEvent, PingEvent } from "@effect-monorepo/contract"
-import {
-  addRpcContext,
-  addUserContext,
-  addFeatureFlags,
-  emitWideEvent,
-} from "./wideEvent.js"
+import { User, ServerEvent, UserCreatedEvent, PingEvent, UnauthenticatedError } from "@effect-monorepo/contract"
+import * as Jwt from "./auth/jwt.js"
 
 // ============================================================================
 // METRICS - Custom metrics for observability
@@ -126,51 +121,34 @@ export const UsersRpcsLive = UsersRpcs.toLayer({
       // Increment RPC call counter
       yield* Metric.increment(rpcCallsTotal)
       
-      // Add RPC context to wide event
-      yield* addRpcContext({
-        method: "GetUsers",
-        operation_type: "query",
-      })
-      
       // Add span annotations (for distributed tracing)
       yield* Effect.annotateCurrentSpan("rpc.method", "GetUsers")
       yield* Effect.annotateCurrentSpan("operation.type", "query")
-      
-      // Example feature flags (in real app, fetch from feature flag service)
-      yield* addFeatureFlags({
-        new_user_list_ui: true,
-        pagination_enabled: false,
-      })
       
       const store = yield* UsersStore
       const users = yield* store.getAll
       
       // Annotate result count
       yield* Effect.annotateCurrentSpan("result.count", users.length)
-      yield* addRpcContext({
-        method: "GetUsers",
-        operation_type: "query",
-        result_count: users.length,
-      })
-      
-      // Emit wide event at end of request
-      yield* emitWideEvent
       
       return users
     }).pipe(
       // Create span and track duration
       Effect.withSpan("RPC.GetUsers"),
-      Metric.trackDuration(rpcDurationMs)
+      Metric.trackDuration(rpcDurationMs),
+      // Handle errors with annotations
+      Effect.tapError((error: unknown) =>
+        Effect.annotateCurrentSpan({
+          "error": true,
+          "error.message": error instanceof Error ? error.message : String(error),
+          "error.type": error instanceof Error ? error.constructor.name : typeof error,
+        })
+      )
     ),
     
   GetUser: (payload) =>
     Effect.gen(function* () {
       yield* Metric.increment(rpcCallsTotal)
-      
-      yield* addRpcContext({
-        method: "GetUser",
-        operation_type: "query",
-      })
       
       yield* Effect.annotateCurrentSpan("rpc.method", "GetUser")
       yield* Effect.annotateCurrentSpan("operation.type", "query")
@@ -179,28 +157,23 @@ export const UsersRpcsLive = UsersRpcs.toLayer({
       const store = yield* UsersStore
       const user = yield* store.getById(payload.id)
       
-      // Add user context to wide event
-      yield* addUserContext({
-        id: user.id,
-        subscription: user.subscription,
-        createdAt: user.createdAt,
-        lifetimeValueCents: user.lifetimeValueCents,
-        lastSeenAt: user.lastSeenAt,
-      })
-      
+      // Add user business context to span
+      yield* Effect.annotateCurrentSpan("user.subscription", user.subscription)
+      yield* Effect.annotateCurrentSpan("user.account_age_days", 
+        Math.floor((Date.now() - user.createdAt) / (1000 * 60 * 60 * 24))
+      )
+      yield* Effect.annotateCurrentSpan("user.lifetime_value_cents", user.lifetimeValueCents)
       yield* Effect.annotateCurrentSpan("result.found", true)
-      yield* emitWideEvent
       
       return user
     }).pipe(
       Effect.withSpan("RPC.GetUser"),
       Metric.trackDuration(rpcDurationMs),
-      Effect.catchAll((error) =>
-        Effect.gen(function* () {
-          yield* Effect.annotateCurrentSpan("error", true)
-          yield* Effect.annotateCurrentSpan("error.message", error)
-          yield* emitWideEvent
-          return yield* Effect.fail(error)
+      Effect.tapError((error) =>
+        Effect.annotateCurrentSpan({
+          "error": true,
+          "error.message": String(error),
+          "error.type": "not_found",
         })
       )
     ),
@@ -210,37 +183,34 @@ export const UsersRpcsLive = UsersRpcs.toLayer({
       yield* Metric.increment(rpcCallsTotal)
       yield* Metric.increment(userOperationsTotal)
       
-      yield* addRpcContext({
-        method: "CreateUser",
-        operation_type: "mutation",
-      })
-      
       yield* Effect.annotateCurrentSpan("rpc.method", "CreateUser")
       yield* Effect.annotateCurrentSpan("operation.type", "mutation")
       yield* Effect.annotateCurrentSpan("user.name", payload.name)
       yield* Effect.annotateCurrentSpan("user.email", payload.email)
       
-      // Example feature flags (in real app, these would affect business logic)
-      yield* addFeatureFlags({
-        new_user_onboarding_flow: true,
-        auto_assign_free_trial: false,
-        send_welcome_email: true,
-      })
+      // Verify authentication - extract user from token
+      const tokenPayload = yield* Jwt.verifyAccessToken(payload.accessToken).pipe(
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({
+            "auth.error": true,
+            "auth.error_message": String(error),
+          })
+        ),
+        Effect.catchAll((error) =>
+          Effect.fail(new UnauthenticatedError({ message: String(error) }))
+        )
+      )
+      
+      yield* Effect.annotateCurrentSpan("auth.userId", tokenPayload.userId)
+      yield* Effect.annotateCurrentSpan("auth.email", tokenPayload.email)
       
       const store = yield* UsersStore
       const eventBus = yield* EventBus
       const newUser = yield* store.create(payload.name, payload.email)
       
       yield* Effect.annotateCurrentSpan("user.id", newUser.id)
-      
-      // Add comprehensive user context to wide event
-      yield* addUserContext({
-        id: newUser.id,
-        subscription: newUser.subscription,
-        createdAt: newUser.createdAt,
-        lifetimeValueCents: newUser.lifetimeValueCents,
-        lastSeenAt: newUser.lastSeenAt,
-      })
+      yield* Effect.annotateCurrentSpan("user.subscription", newUser.subscription)
+      yield* Effect.annotateCurrentSpan("user.lifetime_value_cents", newUser.lifetimeValueCents)
       
       // Broadcast the user.created event
       yield* eventBus.broadcast(
@@ -248,15 +218,19 @@ export const UsersRpcsLive = UsersRpcs.toLayer({
       )
       yield* Metric.increment(eventBroadcastsTotal)
       
-      yield* Effect.log("User created", { userId: newUser.id, name: newUser.name })
-      
-      // Emit the wide event (one comprehensive log line)
-      yield* emitWideEvent
+      yield* Effect.log("User created", { userId: newUser.id, name: newUser.name, createdBy: tokenPayload.email })
       
       return newUser
     }).pipe(
       Effect.withSpan("RPC.CreateUser"),
-      Metric.trackDuration(rpcDurationMs)
+      Metric.trackDuration(rpcDurationMs),
+      Effect.tapError((error) =>
+        Effect.annotateCurrentSpan({
+          "error": true,
+          "error.message": error instanceof Error ? error.message : String(error),
+          "error.type": error instanceof Error ? error.constructor.name : typeof error,
+        })
+      )
     ),
     
   SubscribeEvents: () =>
@@ -264,26 +238,13 @@ export const UsersRpcsLive = UsersRpcs.toLayer({
       Effect.gen(function* () {
         yield* Metric.increment(rpcCallsTotal)
         
-        yield* addRpcContext({
-          method: "SubscribeEvents",
-          operation_type: "stream",
-        })
-        
         yield* Effect.annotateCurrentSpan("rpc.method", "SubscribeEvents")
         yield* Effect.annotateCurrentSpan("operation.type", "stream")
-        
-        yield* addFeatureFlags({
-          sse_heartbeat_enabled: true,
-          sse_compression: false,
-        })
         
         const eventBus = yield* EventBus
         
         // Update gauge for active subscribers (increment on subscribe)
         yield* Metric.increment(activeSubscribersGauge)
-        
-        // Emit wide event for subscription start
-        yield* emitWideEvent
         
         // Real events from the event bus
         const realEvents = eventBus.subscribe
@@ -310,6 +271,14 @@ export const UsersRpcsLive = UsersRpcs.toLayer({
             Effect.annotateCurrentSpan("event.type", event.type)
           )
         )
-      }).pipe(Effect.withSpan("RPC.SubscribeEvents"))
+      }).pipe(
+        Effect.withSpan("RPC.SubscribeEvents"),
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({
+            "error": true,
+            "error.message": String(error),
+          })
+        )
+      )
     ),
 })

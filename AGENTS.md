@@ -5,10 +5,10 @@ This guide is designed for AI agents working in this Effect RPC monorepo.
 ## Quick Reference
 
 ### Monorepo Structure
-- **contract**: RPC schema definitions using Effect RPC
-- **server**: Bun HTTP server with Effect Platform
-- **app**: React frontend with effect-atom
-- **cli**: Command-line testing tool with Effect CLI
+- **contract**: RPC schema definitions using Effect RPC (users + auth)
+- **server**: Bun HTTP server with Effect Platform (ports: 3000)
+- **app**: React frontend with effect-atom (ports: 5173)
+- **cli**: Command-line testing tool for RPC endpoints
 
 ### Build & Run Commands
 
@@ -37,8 +37,11 @@ bun run --filter @effect-monorepo/app typecheck
 
 # CLI (testing tool)
 bun packages/cli/src/index.ts list                 # List users
-bun packages/cli/src/index.ts create "Name" "email@example.com"  # Create user
-bun packages/cli/src/index.ts --help               # Show help
+bun packages/cli/src/index.ts register "Name" "email@test.com" "password123"  # Register
+bun packages/cli/src/index.ts login "email@test.com" "password123"  # Login
+bun packages/cli/src/index.ts create "Name" "email" "<token>"  # Create user (needs auth token)
+bun packages/cli/src/index.ts test-workflow       # Run full auth workflow test
+bun packages/cli/src/index.ts --help              # Show help
 ```
 
 #### Individual Testing/Running
@@ -130,10 +133,10 @@ import { AtomRpc } from "@effect-atom/atom-react"
 export class UsersClient extends AtomRpc.Tag<UsersClient>()("UsersClient", {
   group: UsersRpcs,
   protocol: RpcClient.layerProtocolHttp({
-    url: "http://localhost:3000/rpc"
+    url: "http://localhost:3000/rpc/users"  // Note: Use specific path, not just /rpc
   }).pipe(
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(RpcSerialization.layerJson)
+    Layer.provide(RpcSerialization.layerNdjson)  // CRITICAL: Must match server serialization
   )
 }) {}
 
@@ -193,12 +196,12 @@ import { Layer } from "effect"
 // Create the RPC server layer with HTTP router
 const RpcRoute = RpcServer.layerHttpRouter({
   group: UsersRpcs,
-  path: "/rpc",
+  path: "/rpc/users",  // Specific path for this RPC group
   protocol: "http"  // CRITICAL: Use "http" for HTTP POST (default is "websocket")
 }).pipe(
   Layer.provide(UsersRpcsLive),
   Layer.provide(UsersStore.Live),
-  Layer.provide(RpcSerialization.layerJson),
+  Layer.provide(RpcSerialization.layerNdjson),  // CRITICAL: Must match client serialization
   Layer.provide(HttpLayerRouter.cors()) // Enable CORS for browser access
 )
 
@@ -243,7 +246,15 @@ Maintain code quality through:
 
 This project uses **@effect/opentelemetry** with the lightweight Otlp implementation for observability.
 
-#### Setup & Usage
+**Telemetry Strategy:**
+- **Development:** Jaeger (local, traces only, simple)
+- **Production:** Google Cloud Trace (Cloud Run, managed, scalable)
+
+The application **automatically switches** between local and production telemetry based on `NODE_ENV` (server) or `import.meta.env.MODE` (client).
+
+---
+
+#### Local Development with Jaeger
 
 **Starting Jaeger:**
 ```bash
@@ -263,14 +274,148 @@ docker compose down
 1. Open Jaeger UI
 2. Select service: `effect-rpc-server` or `effect-rpc-client`
 3. Click "Find Traces"
-4. Explore distributed traces showing the full request flow
+4. Explore distributed traces showing the full request journey
 
-**Available Metrics:**
-- `rpc_calls_total` - Total number of RPC calls
-- `user_operations_total` - Total user CRUD operations
-- `rpc_duration_ms` - RPC call duration histogram
-- `event_broadcasts_total` - Total event broadcasts
-- `active_subscribers` - Number of active SSE subscribers
+**Local Architecture:**
+```
+Effect RPC App → Otlp.layerJson → Jaeger (localhost:4318)
+```
+
+**Configuration Files:**
+- `packages/server/src/telemetry.ts` - Server telemetry (Jaeger)
+- `packages/app/src/telemetry.ts` - Client telemetry (Jaeger)
+- `otel-collector-config.yaml` - Collector config (exports to Jaeger)
+
+---
+
+#### Production with Google Cloud Trace
+
+**Architecture:**
+```
+Effect RPC App → OTel Collector Sidecar → Google Cloud Trace API
+```
+
+**Configuration Files:**
+- `packages/server/src/telemetry-gcp.ts` - Server telemetry (GCP)
+- `packages/app/src/telemetry-gcp.ts` - Client telemetry (GCP)
+- `otel-collector-config-gcp.yaml` - Collector config (exports to Google Cloud Trace)
+
+**Environment Variables (Production):**
+```bash
+# Required for GCP integration
+GCP_PROJECT_ID=your-project-id              # Your Google Cloud project
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318  # Collector sidecar
+NODE_ENV=production                         # Triggers GCP telemetry
+CLOUD_REGION=us-central1                    # GCP region
+
+# Auto-detected by Cloud Run (no need to set)
+K_SERVICE=effect-rpc-server                 # Cloud Run service name
+K_REVISION=effect-rpc-server-00042-xiv      # Cloud Run revision
+K_INSTANCE_ID=00bf4bf02d44ab8e...            # Instance ID
+```
+
+**How Auto-Switching Works:**
+
+**Server (`packages/server/src/index.ts`):**
+```typescript
+import { TelemetryLive } from "./telemetry.js"         // Jaeger
+import { TelemetryGcpLive } from "./telemetry-gcp.js"  // Google Cloud Trace
+
+// Auto-select based on NODE_ENV
+const TelemetryLayer = process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging"
+  ? TelemetryGcpLive  // → Google Cloud Trace
+  : TelemetryLive     // → Jaeger (local)
+
+BunRuntime.runMain(
+  Layer.launch(
+    HttpLayerRouter.serve(AllRoutes).pipe(
+      Layer.provide(TelemetryLayer)  // 👈 Automatically switches!
+    )
+  )
+)
+```
+
+**Client (`packages/app/src/atoms.ts`):**
+```typescript
+import { TelemetryLive } from "./telemetry.js"         // Jaeger
+import { TelemetryGcpLive } from "./telemetry-gcp.js"  // Google Cloud Trace
+
+// Auto-select based on Vite MODE
+const TelemetryLayer = import.meta.env.MODE === "production"
+  ? TelemetryGcpLive  // → Google Cloud Trace
+  : TelemetryLive     // → Jaeger (local)
+
+export class UsersClient extends AtomRpc.Tag<UsersClient>()("UsersClient", {
+  group: UsersRpcs,
+  protocol: RpcClient.layerProtocolHttp({
+    url: "http://localhost:3000/rpc/users"
+  }).pipe(
+    Layer.provide(TelemetryLayer)  // 👈 Automatically switches!
+  )
+}) {}
+```
+
+**GCP Resource Attributes:**
+
+The `telemetry-gcp.ts` files automatically add Google Cloud resource attributes:
+```typescript
+{
+  "cloud.provider": "gcp",
+  "cloud.platform": "gcp_cloud_run",
+  "cloud.region": "us-central1",
+  "cloud.account.id": "your-project-id",
+  "service.name": "effect-rpc-server",
+  "service.version": "revision-id",
+  "faas.name": "effect-rpc-server",
+  "faas.instance": "instance-id"
+}
+```
+
+These attributes help Google Cloud Trace properly group and identify your telemetry.
+
+**Setting Up GCP Authentication:**
+
+1. **Create Service Account:**
+```bash
+gcloud iam service-accounts create effect-rpc-telemetry \
+  --display-name="Effect RPC Telemetry Service Account"
+```
+
+2. **Grant Permissions:**
+```bash
+# Cloud Trace Writer
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:effect-rpc-telemetry@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/cloudtrace.agent"
+```
+
+3. **Attach to Cloud Run Service:**
+```bash
+gcloud run services update effect-rpc-server \
+  --service-account=effect-rpc-telemetry@${PROJECT_ID}.iam.gserviceaccount.com \
+  --region=us-central1
+```
+
+**Accessing Traces in GCP:**
+1. Go to Google Cloud Console → **Trace** (https://console.cloud.google.com/traces)
+2. Select your project
+3. View traces from `effect-rpc-server` and `effect-rpc-client`
+4. Explore distributed traces across services
+
+**Cost Estimation (Google Cloud Trace):**
+- **Free Tier:** First 2.5M spans/month FREE
+- **Pricing:** $0.20 per million spans after free tier
+- **Example:** 100 req/sec × 5 spans/req × 30 days = ~130M spans/month ≈ **$25/month**
+
+**Cost Optimization:**
+Enable sampling in `otel-collector-config-gcp.yaml`:
+```yaml
+processors:
+  probabilistic_sampler:
+    sampling_percentage: 10  # Sample 10% (reduce cost by 90%)
+```
+
+---
 
 #### Instrumenting Code
 
@@ -284,6 +429,14 @@ const myOperation = Effect.gen(function* () {
 }).pipe(
   Effect.withSpan("operation-name")  // Creates a named span
 )
+```
+
+**Span Naming Convention (like lucas-barake repo):**
+```typescript
+// Pattern: ServiceName.MethodName
+Effect.withSpan("UsersRepository.create")   // Database layer
+Effect.withSpan("UsersService.createUser")  // Business logic layer
+Effect.withSpan("TokenCipher.encrypt")      // Utility layer
 ```
 
 **Adding Metrics:**
@@ -302,7 +455,7 @@ const operation = Effect.gen(function* () {
 ```
 
 **Distributed Tracing:**
-Trace context automatically propagates through RPC calls between client and server. You'll see connected spans in Jaeger showing the complete request journey:
+Trace context automatically propagates through RPC calls between client and server. You'll see connected spans in Jaeger/GCP showing the complete request journey:
 ```
 effect-rpc-client: CreateUser-RPC (50ms)
   └─ HTTP POST /rpc (45ms)
@@ -310,20 +463,19 @@ effect-rpc-client: CreateUser-RPC (50ms)
           └─ user.create (30ms)
 ```
 
-#### Architecture
+---
 
-- **Server:** Bun runtime with Otlp exporter → Jaeger (OTLP HTTP port 4318)
-- **Client:** Browser with Otlp exporter → Jaeger (OTLP HTTP port 4318)
-- **Backend:** Jaeger all-in-one container
-- **Protocol:** OTLP over HTTP (lightweight, no heavy OpenTelemetry SDK deps)
+#### Key Design Decisions (Minimalist Approach)
 
-#### Production Considerations
+Following the pattern from [lucas-barake/effect-monorepo](https://github.com/lucas-barake/effect-monorepo):
 
-For production, update telemetry configuration:
-1. Change `baseUrl` in `packages/*/src/telemetry.ts` to your OTLP collector
-2. Add authentication headers if required
-3. Adjust export intervals for your needs
-4. Consider using a different exporter (Honeycomb, Datadog, etc.)
+✅ **Traces Only** - No metrics or structured logging infrastructure (keeps it simple)  
+✅ **Server-Side Telemetry** - Primary focus on backend traces  
+✅ **Auto-Switching** - Environment-based config switching (no manual changes)  
+✅ **Lightweight** - No heavy observability stack, just OTLP export  
+✅ **Effect-First** - Use `Effect.log`, `Effect.withSpan`, native patterns  
+
+This approach provides **production-ready tracing** without the complexity of a full observability stack.
 
 ### CORS Issues with RPC Server
 
@@ -355,7 +507,79 @@ const RpcRoute = RpcServer.layerHttpRouter({
 
 **Checklist**:
 1. ✅ Server is running on the correct port (3000)
-2. ✅ Client URL matches server: `http://localhost:3000/rpc`
+2. ✅ Client URL matches server: `http://localhost:3000/rpc/users` (or `/rpc/auth`)
 3. ✅ Server uses `protocol: "http"` if client uses HTTP POST
-4. ✅ Both use same serialization: `RpcSerialization.layerJson`
+4. ✅ Both use same serialization: `RpcSerialization.layerNdjson` (CRITICAL: JSON vs NDJSON mismatch causes "Expected array but got null" errors)
 5. ✅ CLI uses `Effect.scoped` pattern for resource management
+
+### RPC Serialization Mismatch
+
+**Problem**: "Expected an array of responses, but got: null" error in browser.
+
+**Cause**: Client and server using different serialization formats:
+- Server: `RpcSerialization.layerNdjson` (Newline Delimited JSON)
+- Client: `RpcSerialization.layerJson` (regular JSON)
+
+**Solution**: Ensure **both** client and server use the **same** serialization:
+```typescript
+// Server (packages/server/src/index.ts)
+const RpcRoute = RpcServer.layerHttpRouter({
+  group: UsersRpcs,
+  path: "/rpc/users",
+  protocol: "http"
+}).pipe(
+  Layer.provide(RpcSerialization.layerNdjson)  // Use NDJSON
+)
+
+// Client (packages/app/src/atoms.ts)
+export class UsersClient extends AtomRpc.Tag<UsersClient>()("UsersClient", {
+  group: UsersRpcs,
+  protocol: RpcClient.layerProtocolHttp({
+    url: "http://localhost:3000/rpc/users"
+  }).pipe(
+    Layer.provide(RpcSerialization.layerNdjson)  // Must match server!
+  )
+}) {}
+```
+
+### Shared Service Layers (AuthStorage Issue)
+
+**Problem**: Register works but login fails with "Invalid credentials" even with correct password.
+
+**Cause**: Each RPC handler was creating a **new instance** of `AuthStorageLive` by calling `.pipe(Effect.provide(AuthStorageLive))` in the service functions. This means:
+- Register creates AuthStorage instance A, saves user
+- Login creates AuthStorage instance B (empty), can't find user
+
+**Solution**: Provide service layers at the **server level**, not in individual service functions:
+
+```typescript
+// ❌ WRONG - Don't do this in service.ts
+export const login = (email: string, password: string) =>
+  Effect.gen(function* () {
+    const storage = yield* AuthStorage
+    // ...
+  }).pipe(
+    Effect.provide(AuthStorageLive)  // ❌ Creates new instance each time!
+  )
+
+// ✅ CORRECT - Remove .pipe(Effect.provide(...)) from services
+export const login = (email: string, password: string) =>
+  Effect.gen(function* () {
+    const storage = yield* AuthStorage
+    // ...
+  })  // ✅ No provide here
+
+// ✅ CORRECT - Provide at server level in index.ts
+BunRuntime.runMain(
+  Layer.launch(
+    HttpLayerRouter.serve(AllRoutes).pipe(
+      Layer.provide(UsersStore.Live),
+      Layer.provide(EventBus.Live),
+      Layer.provide(AuthStorageLive),  // ✅ Single shared instance
+      Layer.provide(BunHttpServer.layer({ port: 3000 }))
+    )
+  )
+)
+```
+
+**Key principle**: Services that need to maintain state across requests (like storage, caches, connection pools) must be provided at the **server/application level**, not in individual request handlers.

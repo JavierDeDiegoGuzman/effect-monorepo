@@ -1,0 +1,162 @@
+# OpenTelemetry Collector Configuration for Google Cloud Operations
+#
+# This configuration exports telemetry data to Google Cloud Trace.
+# It's designed for Cloud Run deployments where the collector runs as a sidecar container.
+#
+# Architecture:
+# Effect RPC App → OTel Collector (this config) → Google Cloud Trace API
+#
+# Authentication:
+# Uses Application Default Credentials (ADC) - automatically detected in Cloud Run.
+# For local testing, set GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+#
+# Environment Variables:
+# - GCP_PROJECT_ID: Your Google Cloud project ID (required)
+# - GOOGLE_APPLICATION_CREDENTIALS: Path to service account key (local dev only)
+
+receivers:
+  # OTLP receiver - accepts telemetry from your Effect RPC app
+  otlp:
+    protocols:
+      # HTTP protocol (default for @effect/opentelemetry)
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://localhost:*"  # Development
+            - "https://*.run.app"   # Cloud Run domains
+            - "*"                   # Allow all (for testing)
+          allowed_headers: ["*"]
+      
+      # gRPC protocol (optional, not used by default)
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Batch processor - groups telemetry data before sending to reduce API calls
+  batch:
+    timeout: 10s              # Max time to wait before sending a batch
+    send_batch_size: 1024     # Send when batch reaches this size
+    send_batch_max_size: 2048 # Maximum batch size
+
+  # Resource detection - auto-detects GCP environment attributes
+  resourcedetection/gcp:
+    detectors: [gcp, env]     # Detect GCP resources and environment variables
+    timeout: 2s
+    override: false           # Don't override manually set attributes
+
+  # Resource processor - adds/modifies resource attributes
+  resource:
+    attributes:
+      - key: cloud.provider
+        value: gcp
+        action: upsert
+      - key: cloud.platform
+        value: gcp_cloud_run
+        action: upsert
+
+  # Memory limiter - prevents the collector from using too much memory
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512            # Max memory usage (adjust based on Cloud Run limits)
+    spike_limit_mib: 128      # Allow temporary spikes
+
+  # Probabilistic sampling (optional) - reduce trace volume in production
+  # Uncomment to enable sampling
+  # probabilistic_sampler:
+  #   sampling_percentage: 10  # Sample 10% of traces (reduce cost by 90%)
+
+exporters:
+  # Google Cloud Trace exporter
+  googlecloud:
+    # Project ID (required) - reads from GCP_PROJECT_ID env var
+    project: ${env:GCP_PROJECT_ID}
+    
+    # Trace configuration
+    trace:
+      # Google Cloud Trace API endpoint
+      endpoint: cloudtrace.googleapis.com:443
+      use_insecure: false
+      timeout: 12s
+      
+      # Compression for network efficiency
+      compression: gzip
+      
+      # Retry configuration - handle transient failures
+      retry_on_failure:
+        enabled: true
+        initial_interval: 5s
+        max_interval: 30s
+        max_elapsed_time: 300s
+      
+      # Queue configuration - buffer traces during outages
+      sending_queue:
+        enabled: true
+        num_consumers: 10      # Parallel workers sending to GCP
+        queue_size: 1000       # Max traces to buffer
+    
+    # Metrics configuration (optional)
+    # Note: @effect/opentelemetry doesn't export metrics by default
+    # Uncomment if you add custom metrics to your Effect app
+    # metric:
+    #   endpoint: monitoring.googleapis.com:443
+    #   use_insecure: false
+    #   timeout: 12s
+    #   compression: gzip
+    #   
+    #   # Filter which metrics to send to GCP
+    #   resource_filters:
+    #     - prefix: "gcp."
+    #     - prefix: "cloud."
+    #     - prefix: "rpc."
+
+  # Debug/logging exporter (optional) - useful for troubleshooting
+  # Uncomment to see traces in collector logs
+  # logging:
+  #   verbosity: detailed
+  #   sampling_initial: 5
+  #   sampling_thereafter: 200
+
+service:
+  # Telemetry pipelines - define how data flows through the collector
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors:
+        - memory_limiter          # Prevent OOM
+        - resourcedetection/gcp   # Auto-detect GCP attributes
+        - resource                # Add cloud provider attributes
+        - batch                   # Batch before export
+        # Uncomment to enable sampling:
+        # - probabilistic_sampler
+      exporters: [googlecloud]    # Export to Google Cloud Trace
+    
+    # Logs pipeline (optional) - Effect apps don't export logs via OTLP by default
+    # If you configure structured logging, uncomment this:
+    # logs:
+    #   receivers: [otlp]
+    #   processors:
+    #     - memory_limiter
+    #     - resourcedetection/gcp
+    #     - resource
+    #     - batch
+    #   exporters: [googlecloud]
+    
+    # Metrics pipeline (optional) - if you add custom metrics
+    # metrics:
+    #   receivers: [otlp]
+    #   processors:
+    #     - memory_limiter
+    #     - resourcedetection/gcp
+    #     - resource
+    #     - batch
+    #   exporters: [googlecloud]
+
+  # Collector self-monitoring
+  telemetry:
+    logs:
+      level: info               # Collector log level (debug, info, warn, error)
+    metrics:
+      level: detailed           # Collector internal metrics
+      address: 0.0.0.0:8888     # Prometheus endpoint for collector metrics

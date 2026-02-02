@@ -1,70 +1,75 @@
 import { Effect, Layer, Ref } from "effect"
-import type { AuthUser, RefreshTokenRecord } from "@effect-monorepo/contract"
+import { AuthUser } from "@effect-monorepo/contract"
 
-// In-memory storage using Ref (same pattern as UsersStore)
-export type AuthStorageState = {
-  users: Array<AuthUser>
-  refreshTokens: Array<RefreshTokenRecord>
+// ============================================================================
+// Types for refresh token storage
+// ============================================================================
+
+export interface RefreshTokenRecord {
+  readonly token: string
+  readonly userId: string
+  readonly createdAt: number
+  readonly revoked: boolean
 }
+
+// ============================================================================
+// AuthStorage Service
+// ============================================================================
 
 export class AuthStorage extends Effect.Tag("AuthStorage")<
   AuthStorage,
   {
-    readonly getUserByEmail: (email: string) => Effect.Effect<AuthUser | undefined, never>
-    readonly getUserById: (id: string) => Effect.Effect<AuthUser | undefined, never>
-    readonly createUser: (user: AuthUser) => Effect.Effect<void, never>
-    readonly storeRefreshToken: (record: RefreshTokenRecord) => Effect.Effect<void, never>
-    readonly getRefreshToken: (token: string) => Effect.Effect<RefreshTokenRecord | undefined, never>
-    readonly revokeRefreshToken: (token: string) => Effect.Effect<void, never>
+    readonly usersRef: Ref.Ref<Array<AuthUser>>
+    readonly tokensRef: Ref.Ref<Array<RefreshTokenRecord>>
+    readonly getUserByEmail: (email: string) => Effect.Effect<AuthUser | undefined>
+    readonly getUserById: (id: string) => Effect.Effect<AuthUser | undefined>
+    readonly createUser: (user: AuthUser) => Effect.Effect<void>
+    readonly storeRefreshToken: (record: RefreshTokenRecord) => Effect.Effect<void>
+    readonly getRefreshToken: (token: string) => Effect.Effect<RefreshTokenRecord | undefined>
+    readonly revokeRefreshToken: (token: string) => Effect.Effect<void>
   }
->() {
-  private static makeUsersStore() {
-    return Effect.gen(function* () {
-      const state = yield* Ref.make<AuthStorageState>({
-        users: [],
-        refreshTokens: [],
-      })
+>() {}
 
-      return {
-        getUserByEmail: (email: string) =>
-          Ref.get(state).pipe(
-            Effect.map((s) => s.users.find((u) => u.email === email))
-          ),
+// ============================================================================
+// Live Implementation
+// ============================================================================
 
-        getUserById: (id: string) =>
-          Ref.get(state).pipe(
-            Effect.map((s) => s.users.find((u) => u.id === id))
-          ),
+const makeAuthStorage = Effect.gen(function* () {
+  const usersRef = yield* Ref.make<Array<AuthUser>>([])
+  const tokensRef = yield* Ref.make<Array<RefreshTokenRecord>>([])
 
-        createUser: (user: AuthUser) =>
-          Ref.update(state, (s) => ({
-            ...s,
-            users: [...s.users, user],
-          })),
+  const getUserByEmail = (email: string) =>
+    Ref.get(usersRef).pipe(Effect.map((users) => users.find((u) => u.email === email)))
 
-        storeRefreshToken: (record: RefreshTokenRecord) =>
-          Ref.update(state, (s) => ({
-            ...s,
-            refreshTokens: [...s.refreshTokens, record],
-          })),
+  const getUserById = (id: string) =>
+    Ref.get(usersRef).pipe(Effect.map((users) => users.find((u) => u.id === id)))
 
-        getRefreshToken: (token: string) =>
-          Ref.get(state).pipe(
-            Effect.map((s) =>
-              s.refreshTokens.find((t) => t.token === token && !t.revoked)
-            )
-          ),
+  const createUser = (user: AuthUser) =>
+    Ref.update(usersRef, (users) => [...users, user])
 
-        revokeRefreshToken: (token: string) =>
-          Ref.update(state, (s) => ({
-            ...s,
-            refreshTokens: s.refreshTokens.map((t) =>
-              t.token === token ? { ...t, revoked: true } : t
-            ),
-          })),
-      }
-    })
+  const storeRefreshToken = (record: RefreshTokenRecord) =>
+    Ref.update(tokensRef, (tokens) => [...tokens, record])
+
+  const getRefreshToken = (token: string) =>
+    Ref.get(tokensRef).pipe(
+      Effect.map((tokens) => tokens.find((t) => t.token === token && !t.revoked))
+    )
+
+  const revokeRefreshToken = (token: string) =>
+    Ref.update(tokensRef, (tokens) =>
+      tokens.map((t) => (t.token === token ? { ...t, revoked: true } : t))
+    )
+
+  return {
+    usersRef,
+    tokensRef,
+    getUserByEmail,
+    getUserById,
+    createUser,
+    storeRefreshToken,
+    getRefreshToken,
+    revokeRefreshToken,
   }
+})
 
-  static readonly Live = Layer.effect(this, this.makeUsersStore())
-}
+export const AuthStorageLive = Layer.effect(AuthStorage, makeAuthStorage)

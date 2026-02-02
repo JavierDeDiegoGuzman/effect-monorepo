@@ -6,6 +6,18 @@ import { Layer, Effect, Stream } from "effect"
 import { UsersRpcs } from "@effect-monorepo/contract"
 import type { User, ServerEvent } from "@effect-monorepo/contract"
 import { TelemetryLive } from "./telemetry.js"
+import { TelemetryGcpLive } from "./telemetry-gcp.js"
+
+/**
+ * Selecciona la configuración de telemetría según el entorno:
+ * - development: Usa Jaeger local (TelemetryLive)
+ * - production: Usa Google Cloud Trace (TelemetryGcpLive)
+ * 
+ * Variable de entorno: import.meta.env.MODE (Vite)
+ */
+const TelemetryLayer = import.meta.env.MODE === "production"
+  ? TelemetryGcpLive  // Google Cloud Trace para producción
+  : TelemetryLive     // Jaeger local para desarrollo
 
 // ============================================================================
 // SINGLE RPC CLIENT - One client to rule them all
@@ -16,11 +28,11 @@ import { TelemetryLive } from "./telemetry.js"
 export class UsersClient extends AtomRpc.Tag<UsersClient>()("UsersClient", {
   group: UsersRpcs,
   protocol: RpcClient.layerProtocolHttp({
-    url: "http://localhost:3000/rpc"
+    url: "http://localhost:3000/rpc/users"
   }).pipe(
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(RpcSerialization.layerNdjson),  // CRITICAL: Use NDJSON for streaming support
-    Layer.provide(TelemetryLive)  // 👈 OpenTelemetry integration
+    Layer.provide(TelemetryLayer)  // 👈 Auto-selects telemetry based on import.meta.env.MODE
   )
 }) {}
 

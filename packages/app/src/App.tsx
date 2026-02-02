@@ -9,6 +9,8 @@ import {
   createUserAtom,
   latestEventAtom
 } from "./atoms.js"
+import { LoginForm } from "./auth/LoginForm.js"
+import { authStateAtom, clearStoredTokens } from "./auth/atoms.js"
 
 function App() {
   const usersResult = useAtomValue(usersAtom)
@@ -17,6 +19,9 @@ function App() {
   const createUser = useAtomSet(createUserAtom, { mode: "promiseExit" })
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  
+  // Auth state
+  const [auth, setAuth] = useAtom(authStateAtom)
   
   // ✅ NEW: Subscribe to the latest event stream (no manual polling needed)
   // The stream is handled automatically by the atom
@@ -31,8 +36,9 @@ function App() {
     setError(null)
 
     // Use mutation with reactivity keys to auto-refresh users list
+    // Include access token for authentication
     const exit = await createUser({
-      payload: { name, email },
+      payload: { name, email, accessToken: auth.accessToken! },
       reactivityKeys: ["users"] // This will invalidate and refresh the users query
     })
 
@@ -46,9 +52,45 @@ function App() {
     setCreating(false)
   }
 
+  const handleLogout = () => {
+    clearStoredTokens()
+    setAuth({
+      isAuthenticated: false,
+      user: null,
+      accessToken: null
+    })
+  }
+
+  // Show login form if not authenticated
+  if (!auth.isAuthenticated) {
+    return (
+      <div style={{ padding: "2rem", maxWidth: "800px", margin: "0 auto" }}>
+        <h1>Effect RPC + React Demo with Authentication</h1>
+        <LoginForm onSuccess={() => {
+          console.log("Login successful!")
+        }} />
+      </div>
+    )
+  }
+
   return (
     <div style={{ padding: "2rem", maxWidth: "800px", margin: "0 auto" }}>
-      <h1>Effect RPC + React Demo with Streaming</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
+        <h1>Effect RPC + React Demo with Streaming</h1>
+        <button
+          onClick={handleLogout}
+          style={{
+            padding: "0.5rem 1rem",
+            cursor: "pointer",
+            background: "#dc3545",
+            color: "white",
+            border: "none",
+            borderRadius: "4px"
+          }}
+        >
+          Logout
+        </button>
+      </div>
 
       {/* Stream connection status indicator */}
       {Result.match(latestEventResult, {

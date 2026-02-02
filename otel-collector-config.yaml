@@ -1,0 +1,55 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins: ["*"]
+          allowed_headers: ["*"]
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  
+  # Debug exporter - prints telemetry to console for debugging
+  debug:
+    verbosity: detailed      # Options: basic, normal, detailed
+    sampling_initial: 5      # Log first 5 items of each type
+    sampling_thereafter: 200 # Then log every 200th item
+  
+  # Uncomment to enable Prometheus for metrics
+  # prometheus:
+  #   endpoint: 0.0.0.0:8889
+  #   namespace: effect_rpc
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, debug]  # Export to both Jaeger and console
+    
+    # Logs pipeline - print to console in development
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]  # Print logs to console
+    
+    # Metrics pipeline - print to console in development
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]  # Print metrics to console
+  
+  # Collector telemetry - configure collector's own logging
+  telemetry:
+    logs:
+      level: info  # Options: debug, info, warn, error
+      encoding: console  # Human-readable format

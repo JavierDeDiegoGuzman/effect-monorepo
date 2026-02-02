@@ -1,6 +1,9 @@
 import { Rpc, RpcGroup } from "@effect/rpc"
 import { Schema } from "effect"
 
+export * from "./auth.js"
+import { UnauthenticatedError } from "./auth.js"
+
 // User schema with business context (following "logging sucks" principles)
 export class User extends Schema.Class<User>("User")({
   id: Schema.String,
@@ -59,8 +62,12 @@ export class UsersRpcs extends RpcGroup.make(
   }),
   Rpc.make("CreateUser", {
     success: User,
-    payload: { name: Schema.String, email: Schema.String },
-    error: Schema.String,
+    payload: { 
+      name: Schema.String, 
+      email: Schema.String,
+      accessToken: Schema.String  // Required for authentication
+    },
+    error: Schema.Union(UnauthenticatedError, Schema.String),
   }),
   Rpc.make("SubscribeEvents", {
     success: ServerEvent,
@@ -69,6 +76,3 @@ export class UsersRpcs extends RpcGroup.make(
     stream: true  // CRITICAL: This makes it return a Stream
   })
 ) {}
-
-// Export auth types and schemas
-export * from "./auth.js"
